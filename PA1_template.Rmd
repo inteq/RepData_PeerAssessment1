@@ -4,22 +4,228 @@ output:
   html_document:
     keep_md: true
 ---
+## Anciliary Function
 
+I wrote a classifier for the time series indexes that will be used
+to separate each day into `weekend`/`weekday` factor groups
+```{r , echo=TRUE}
+#Use custom function to apply type-of-day factor to a data frame
+classify_week_day <-function(day_of_week) {
+  if (day_of_week==6 | day_of_week == 0) {
+    'Weekend'
+  }
+  else {
+    'Weekday'
+  }
+}
+```
 
 ## Loading and preprocessing the data
+
+I took the original data and extracted a subset to use for the time series data that will be
+needed for the aggregate calculations. I also went ahead and created aggregate vectors.
+
+```{r,echo=TRUE}
+#Load the necessary libraries
+library(xts)
+library(ggplot2)
+library(lattice)
+
+#Unzip the compressed data source
+unzip('./activity.zip')
+
+#Load the csv data from the activity data file
+raw_step_data <- read.csv('./activity.csv',header=TRUE)
+
+#Prep the date column so that it can be used for time series operations
+raw_step_data$date <- as.Date(raw_step_data$date)
+
+#Add a day-of-week column to use for coloring
+raw_step_data$day_of_week <- as.POSIXlt(raw_step_data$date,tz="UTC")$wday
+
+#combine the intervals with the dates for each step data item to prepare for time
+#series calculations
+raw_step_data$date <- as.POSIXct(raw_step_data$interval*60,origin=raw_step_data$date,tz="UTC")
+
+#Extract a subset of the step data so that time-series manipulation can be performed
+filtered_step_data <- subset(raw_step_data,!is.na(raw_step_data$steps))
+
+#Build time series data structure which will be used for daily statistics (min,max,mean)
+xts.ts <- xts(filtered_step_data$steps,filtered_step_data$date)
+
+#Perform all step data aggregate calculations
+total_steps_per_day <- apply.daily(xts.ts,sum)
+average_steps_per_day <- apply.daily(xts.ts,mean)
+min_steps_per_day <- apply.daily(xts.ts,min)
+max_steps_per_day <- apply.daily(xts.ts,max)
+
+#Construct new data frame that will hold all time-series aggregates
+aggregate_step_data <- data.frame(cbind(seq(1,length(total_steps_per_day)),
+                                  as.Date(index(total_steps_per_day)),
+                                  as.numeric(total_steps_per_day),
+                                  as.numeric(min_steps_per_day),
+                                  as.numeric(max_steps_per_day),
+                                  as.numeric(average_steps_per_day)))
+#Add sensible column names
+names(aggregate_step_data) <- c("day","date","daily_total","daily_min","daily_max","daily_average")
+#Ensure date is in proper form for day-of-week population
+aggregate_step_data$date <- as.Date(aggregate_step_data$date)
+aggregate_step_data$day_of_week<-as.POSIXlt(as.Date(aggregate_step_data$day))$wday
+
+```  
+### Which data frame will be used for graphs and further exploratory analysis?  
+I will use the newly constructed data frame , aggregate_step_data:
+
+```{r, echo=TRUE}
+   str(aggregate_step_data)  
+   summary(aggregate_step_data)  
+```
 
 
 
 ## What is mean total number of steps taken per day?
 
+###Calculate the total number of steps taken per day
+I stored the sum of steps per day in total_steps_per_day:
+```{r,echo=TRUE}
+  aggregate_step_data$daily_total
+```  
+
+###Make a histogram of the total number of steps taken each day
+I leveraged the data from total_steps_per_day to generate the total steps per day histogram:
+```{r, echo=TRUE}
+  hist(aggregate_step_data$daily_total,breaks=50,
+       xlab="Steps (per day)",main="Total Steps Taken Per Day",
+       col=aggregate_step_data$day_of_week)
+rug(aggregate_step_data$daily_total)
+```  
+
+###Calculate and report the mean and median of the total number of steps taken per day
+I leveraged the data from aggregate_step_data to calculate the mean and mode for steps taken per
+day. 
+```{r,echo=TRUE}
+  mean(aggregate_step_data$daily_total)  
+  median(aggregate_step_data$daily_total)  
+```
 
 
 ## What is the average daily activity pattern?
 
+### Make a time series plot (i.e. type = "l") of the 5-minute interval (x-axis) and the average number of steps taken, averaged across all days (y-axis)
 
+I approached this question by taking the 61 days of averages , with each average coming from a particular day , and 
+generated a time-series plot of that information:
+
+```{r,echo=TRUE}
+  plot(seq(1,59),aggregate_step_data$daily_average,
+      type="l",xlab="Day",ylab="Average Steps Taken",
+      main="Average Steps Taken Per Day")
+```  
+
+### Which 5-minute interval, on average across all the days in the dataset, contains the maximum number of steps?
+
+I approached this question by looking at the time-series plot from the previous graph and zeroing in on the day
+that had the highest average. Judging by the graph , this looks to be an interval from day 52. I double-checked 
+this against the actual average data:
+
+```{r,echo=TRUE}
+  aggregate_step_data$daily_average
+  average_steps_per_day[52]
+```
+
+Next, I grabbed the actual time data from that day to locate the 5-minute interval that had the max value on that day:
+
+```{r,echo=TRUE}  
+  xts.ts['2012-11-23']
+  max(xts.ts['2012-11-23'])
+  
+```
+
+This led me to the 5-minute interval of : 2012-11-23 08:15:00  with a step-count of 567.  
 
 ## Imputing missing values
 
+### Calculate and report the total number of missing values in the dataset
+
+I calculated these numbers by doing the following, which takes the total and removes all rows without any NAs:
+
+```{r,echo=TRUE}
+  missing_data_count<-nrow(raw_step_data) - 
+  sum(!is.na(raw_step_data$steps)&!is.na(raw_step_data$date)&!is.na(raw_step_data$interval))
+  missing_data_count
+```  
+
+
+### Devise a strategy for filling in all of the missing values in the dataset.
+### Create a new dataset that is equal to the original dataset but with the missing data filled in.
+
+I will use a simple strategy that uses the global mean from the available data that is not missing any steps values:
+
+```{r,echo=TRUE}
+   global_average <- mean(filtered_step_data$steps)
+   assign("imputed_step_data",raw_step_data)
+   missing_step_idx <- is.na(imputed_step_data$steps)
+   imputed_step_data[missing_step_idx,]$steps <- global_average
+   
+```
+
+
+
+### Make a histogram of the total number of steps taken each day and Calculate and report the mean and median total number of steps taken per day.
+
+I will perform these calculations using the same strategy as before , leveraging xts:
+
+```{r,echo=TRUE}
+#Build time series data structure which will be used for daily statistics (min,max,mean)
+xts.imputed_ts <- xts(imputed_step_data$steps,imputed_step_data$date)
+#Perform all step data aggregate calculations
+imputed_total_steps_per_day <- apply.daily(xts.imputed_ts,sum)
+imputed_average_steps_per_day <- apply.daily(xts.imputed_ts,mean)
+imputed_min_steps_per_day <- apply.daily(xts.imputed_ts,min)
+imputed_max_steps_per_day <- apply.daily(xts.imputed_ts,max)
+
+#Construct new data frame that will hold all time-series aggregates
+imputed_aggregate_step_data <- data.frame(cbind(seq(1,length(imputed_total_steps_per_day)),
+                                          as.Date(index(imputed_total_steps_per_day)),
+                                          as.numeric(imputed_total_steps_per_day),
+                                          as.numeric(imputed_min_steps_per_day),
+                                          as.numeric(imputed_max_steps_per_day),
+                                          as.numeric(imputed_average_steps_per_day)))
+#Add sensible column names
+names(imputed_aggregate_step_data) <- c("day","date","daily_total","daily_min","daily_max","daily_average")
+#Ensure date is in proper form for day-of-week population
+imputed_aggregate_step_data$date <- as.Date(imputed_aggregate_step_data$date)
+imputed_aggregate_step_data$day_of_week<-as.POSIXlt(as.Date(imputed_aggregate_step_data$day))$wday
+```
+
+### Do these values differ from the estimates from the first part of the assignment? 
+
+I will use a simple summary statistic comparison:
+
+```{r,echo=TRUE}
+  summary(aggregate_step_data)
+  summary(imputed_aggregate_step_data)
+```  
+
+I did not see any real difference. I would suspect that this is because the aggregates per day would be expected to stay relatively stable, since no matter which strategy is used , there was much more data that was originally used than the amount which was added after we fixed the missing values.
+
+
+### What is the impact of imputing missing data on the estimates of the total daily number of steps?
+
+I did not see any real impact due to imputing of the missing data.
 
 
 ## Are there differences in activity patterns between weekdays and weekends?
+First, I needed to add the 'Weekend'/'Weekday' factor to the imputed aggregate data set:
+```{r,echo=TRUE}
+  imputed_aggregate_step_data$type_of_day<-mapply(classify_week_day,imputed_aggregate_step_data$day_of_week)
+```
+To answer this question, I graphed the data with the 'Weekend'/'Weekday' factor being used:
+
+```{r,echo=TRUE}
+  xyplot(imputed_aggregate_step_data$daily_average~seq(1:59)|factor(imputed_aggregate_step_data$type_of_day),
+         type='l',layout=c(1,2),
+         xlab='Interval',ylab='Number of Steps')
+```
+
+The comparison between activity on the weekend vs during the weekdays seems to show the weekdays as having more activity.
